@@ -1795,11 +1795,12 @@ std::vector<StateSlot> StateSlots(llvm::Module *module) {
 
 // Analyze a module, discover aliasing loads and stores, and remove dead
 // stores into the `State` structure.
-void RemoveDeadStores(llvm::Module *module,
-                      llvm::Function *bb_func,
-                      const std::vector<StateSlot> &slots) {
+FuncRegParamsMap RemoveDeadStores(
+    llvm::Module *module,
+    llvm::Function *bb_func,
+    const std::vector<StateSlot> &slots) {
   if (FLAGS_disable_dead_store_elimination) {
-    return;
+    return {};
   }
 
   KillCounter stats = {};
@@ -1807,6 +1808,8 @@ void RemoveDeadStores(llvm::Module *module,
 
   InstToLiveSet live_args;
   InstToOffset state_access_offset;
+
+  FuncRegParamsMap ret;
 
   for (auto &func : *module) {
     if (!IsLiftedFunction(&func, bb_func)) {
@@ -1823,6 +1826,22 @@ void RemoveDeadStores(llvm::Module *module,
         fbv.Visit(fav.state_offset, stats);
       }
     }
+    auto arch = GetTargetArch();
+    std::set<const Register *> used_regs;
+    for (auto it : state_access_offset) {
+      auto inst = it.first;
+      auto offset = it.second;
+      if (llvm::isa<llvm::LoadInst>(inst)) {
+        if (auto reg = arch->RegisterAtStateOffset(offset)) {
+          reg = reg->EnclosingRegister();
+          if (reg->type->isIntegerTy(arch->address_size)) {
+            used_regs.insert(reg);
+          }
+        }
+      }
+    }
+
+    ret[&func] = std::move(used_regs);
   }
 
   // Perform live set analysis
@@ -1862,6 +1881,7 @@ void RemoveDeadStores(llvm::Module *module,
       << "Forwarded by reordering: " << stats.fwd_reordered << "; "
       << "Could not forward: " << stats.fwd_failed << "; "
       << "Unanalyzed functions: " << stats.failed_funcs;
+  return ret;
 }
 
 }  // namespace remill

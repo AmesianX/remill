@@ -30,7 +30,9 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/InstVisitor.h>
 #include <llvm/IR/Module.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Transforms/Utils/Local.h>
+#include <llvm/Transforms/Utils/ValueMapper.h>
 
 #include "remill/Arch/Arch.h"
 #include "remill/BC/DeadStoreEliminator.h"
@@ -1882,6 +1884,145 @@ FuncRegParamsMap RemoveDeadStores(
       << "Could not forward: " << stats.fwd_failed << "; "
       << "Unanalyzed functions: " << stats.failed_funcs;
   return ret;
+}
+
+namespace {
+
+static llvm::Function* RegistersToParam(
+    llvm::Module *module,
+    llvm::Function *func,
+    std::set<const remill::Register *> regs) {
+
+  // Copy originals
+  std::vector<llvm::Type *> new_params;
+  for (auto orig_param : func->getFunctionType()->params()) {
+    new_params.push_back(orig_param);
+  }
+
+  // Add new ones based on regs and their size
+  for (auto reg : regs) {
+    auto size = static_cast<unsigned int>(reg->size);
+    new_params.push_back(llvm::Type::getIntNTy(module->getContext(), size * 8));
+  }
+
+  // Create new function
+  auto impl_func_type = llvm::FunctionType::get(
+      func->getFunctionType()->getReturnType(),
+      new_params, func->isVarArg());
+
+  // TODO(lukas): Address space?
+  std::string impl_name = func->getName().str().replace(0, 4, "impl_");
+
+  LOG(INFO) << "Creating new function " << impl_name;
+
+  auto impl_func = llvm::Function::Create(
+      impl_func_type, func->getLinkage(),
+      impl_name, module);
+
+  impl_func->setAttributes(func->getAttributes());
+
+  // Value to value mapping
+  llvm::ValueToValueMapTy v_map;
+  auto impl_func_arg_it = impl_func->arg_begin();
+  for (auto &arg : func->args()) {
+    v_map[&arg] = &(*impl_func_arg_it);
+    impl_func_arg_it->setName(arg.getName());
+    ++impl_func_arg_it;
+  }
+
+  // Now impl_func_arg_it points to the first of register arguments
+  for (auto reg : regs) {
+    impl_func_arg_it->setName(reg->name);
+    ++impl_func_arg_it;
+  }
+
+  // TODO(lukas): What is this for?
+  llvm::SmallVector<llvm::ReturnInst *, 8> returns;
+  CloneFunctionInto(impl_func, func, v_map, false, returns, "");
+  return impl_func;
+}
+
+// Saves all the registers that get passed into function
+// to their appropriate places in state structure
+static void SaveRegisterArguments(
+    llvm::Module *module,
+    llvm::Function *sub_func,
+    std::set<const remill::Register *> regs) {
+
+  auto &state = *sub_func->arg_begin();
+  auto &first = sub_func->front().front();
+
+  llvm::IRBuilder<> ir(&first);
+  // Get state, cast it to i8* and then do gep to correct offset
+  // This is workaround for __remill_basic_block no longer being present
+  // after opt passes.
+  auto i8_ptr_state = ir.CreateBitCast(
+      &state,
+      llvm::Type::getInt8PtrTy(module->getContext()));
+
+  // We know all of regs are now parameters
+  for (const auto &reg : regs) {
+    auto int64_ty = llvm::Type::getInt64Ty(module->getContext());
+    auto gep = ir.CreateGEP(i8_ptr_state,
+                            llvm::ConstantInt::get(int64_ty, reg->offset));
+    auto cast = ir.CreateBitCast(
+        gep, llvm::Type::getInt64PtrTy(module->getContext()));
+
+    for (auto &arg: sub_func->args()) {
+      if (arg.getName().empty()) {
+        continue;
+      }
+      if (arg.getName().str() == reg->name) {
+        ir.CreateStore(&arg, cast);
+        break;
+      }
+    }
+  }
+}
+
+// Replaces body of sub_func with loads from state and calls impl_func
+static void SimplifySub(llvm::Function *sub_func, llvm::Function *impl_func) {
+  sub_func->deleteBody();
+
+  sub_func->removeFnAttr(llvm::Attribute::NoUnwind);
+  sub_func->removeFnAttr(llvm::Attribute::NoInline);
+  sub_func->addFnAttr(llvm::Attribute::AlwaysInline);
+  sub_func->addFnAttr(llvm::Attribute::InlineHint);
+
+  remill::CloneBlockFunctionInto(sub_func);
+  llvm::IRBuilder<> ir(&sub_func->getEntryBlock());
+
+  std::vector<llvm::Value *> args_to_impl;
+  for (auto &arg : sub_func->args()) {
+    args_to_impl.push_back(&arg);
+  }
+
+  // Load all register arguments
+  for (auto &arg : impl_func->args()) {
+    if (arg.getName().empty()) {
+      continue;
+    }
+    auto var = remill::FindVarInFunction(sub_func, arg.getName().str(), true);
+    if (var) {
+      args_to_impl.push_back(ir.CreateLoad(var));
+    }
+  }
+  auto mem = ir.CreateCall(impl_func, args_to_impl);
+  ir.CreateRet(mem);
+}
+
+} // namespace
+
+void PropagateRegistersToParameters(llvm::Module *module,
+                                    const FuncRegParamsMap &map) {
+  for (const auto &entry : map) {
+    if (entry.first->getName().str().substr(0, 4) != "sub_") {
+      continue;
+    }
+    auto impl_func = RegistersToParam(module, entry.first, entry.second);
+    SimplifySub(entry.first, impl_func);
+    SaveRegisterArguments(module, impl_func, entry.second);
+  }
 }
 
 }  // namespace remill

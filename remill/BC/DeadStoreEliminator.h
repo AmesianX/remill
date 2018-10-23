@@ -54,4 +54,6 @@ using FuncRegParamsMap = std::map<llvm::Function *, std::set<const Register *>>;
 FuncRegParamsMap RemoveDeadStores(llvm::Module *module, llvm::Function *bb_func,
                                   const std::vector<StateSlot> &slots);
 
+void PropagateRegistersToParameters(llvm::Module *module,
+                                    const FuncRegParamsMap &map);
 }  // namespace remill

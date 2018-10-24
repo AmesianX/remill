@@ -80,9 +80,28 @@ struct KillCounter {
 // (and not the `__remill_basic_block`).
 static bool IsLiftedFunction(llvm::Function *func,
                              const llvm::Function *bb_func) {
-  return !(func == bb_func ||
-           func->isDeclaration() ||
-           func->getFunctionType() != bb_func->getFunctionType());
+  // __remill_* family is declaration and has the same type
+  if (func == bb_func || func->isDeclaration()) {
+    return false;
+  }
+  if (func->getFunctionType() == bb_func->getFunctionType()) {
+    return true;
+  }
+  // Lifted function can also have a type that is same as
+  // `__remill_basic_block` with some other params appended
+  const auto &func_type = func->getFunctionType();
+  const auto &bb_func_type = bb_func->getFunctionType();
+
+  if (func_type->getNumParams() < bb_func_type->getNumParams()) {
+    return false;
+  }
+
+  for (auto i = 0U; i < 3; ++i) {
+    if (bb_func_type->getParamType(i) != func_type->getParamType(i)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Recursive visitor of the `State` structure that assigns slots of ranges of
@@ -1795,6 +1814,17 @@ std::vector<StateSlot> StateSlots(llvm::Module *module) {
   return vis.offset_to_slot;
 }
 
+static std::string LoadFromRegisters(const FuncRegParamsMap& map) {
+  std::stringstream ss;
+  for (auto entry : map) {
+    ss << entry.first->getName().str() << std::endl;
+    for (const auto &reg : entry.second) {
+      ss << "\t" << reg->name << std::endl;
+    }
+  }
+  return ss.str();
+}
+
 // Analyze a module, discover aliasing loads and stores, and remove dead
 // stores into the `State` structure.
 FuncRegParamsMap RemoveDeadStores(
@@ -1883,6 +1913,8 @@ FuncRegParamsMap RemoveDeadStores(
       << "Forwarded by reordering: " << stats.fwd_reordered << "; "
       << "Could not forward: " << stats.fwd_failed << "; "
       << "Unanalyzed functions: " << stats.failed_funcs;
+  // TODO(lukas): Remove before merge
+  LOG(INFO) << LoadFromRegisters(ret);
   return ret;
 }
 
@@ -2010,7 +2042,6 @@ static void SimplifySub(llvm::Function *sub_func, llvm::Function *impl_func) {
   auto mem = ir.CreateCall(impl_func, args_to_impl);
   ir.CreateRet(mem);
 }
-
 } // namespace
 
 void PropagateRegistersToParameters(llvm::Module *module,

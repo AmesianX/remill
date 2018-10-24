@@ -165,11 +165,11 @@ llvm::Value *FindVarInFunction(llvm::Function *function, std::string name,
 
 // Find the machine state pointer.
 llvm::Value *LoadStatePointer(llvm::Function *function) {
-  CHECK(kNumBlockArgs == function->arg_size())
+/*  CHECK(kNumBlockArgs == function->arg_size())
       << "Invalid block-like function. Expected three arguments: state "
       << "pointer, program counter, and memory pointer in function "
       << function->getName().str();
-
+*/
   static_assert(0 == kStatePointerArgNum,
                 "Expected state pointer to be the first operand.");
 
@@ -178,11 +178,11 @@ llvm::Value *LoadStatePointer(llvm::Function *function) {
 
 // Return the memory pointer argument.
 llvm::Value *LoadMemoryPointerArg(llvm::Function *function) {
-  CHECK(kNumBlockArgs == function->arg_size())
+  /*CHECK(kNumBlockArgs == function->arg_size())
       << "Invalid block-like function. Expected three arguments: state "
       << "pointer, program counter, and memory pointer in function "
       << function->getName().str();
-
+*/
   static_assert(2 == kMemoryPointerArgNum,
                 "Expected state pointer to be the first operand.");
 
@@ -191,11 +191,11 @@ llvm::Value *LoadMemoryPointerArg(llvm::Function *function) {
 
 // Return the program counter argument.
 llvm::Value *LoadProgramCounterArg(llvm::Function *function) {
-  CHECK(kNumBlockArgs == function->arg_size())
+  /*CHECK(kNumBlockArgs == function->arg_size())
       << "Invalid block-like function. Expected three arguments: state "
       << "pointer, program counter, and memory pointer in function "
       << function->getName().str();
-
+*/
   static_assert(1 == kPCArgNum,
                 "Expected state pointer to be the first operand.");
 
